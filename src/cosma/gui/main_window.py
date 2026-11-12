@@ -640,4 +640,8 @@ def run(project: Project | None = None, path=None):
     if path:
         w.open_project(path)
     w.show()
-    return app.exec()
+    code = app.exec()
+    del w
+    from .shutdown import release_widgets
+    release_widgets(app)                       # otherwise the process can crash on quit (see shutdown.py)
+    return code
