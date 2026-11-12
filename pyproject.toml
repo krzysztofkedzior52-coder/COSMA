@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosma-core"
+version = "0.0.1"
+description = "COSMA: static geomodel builder for CO2 storage (core library)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "numpy>=1.26",
+    "xtgeo>=4.0",
+    "shapely>=2.0",
+    "pyproj>=3.4",
+    "pyshp>=2.3",
+    "defusedxml>=0.7",
+    "lasio>=0.31",
+    "scipy>=1.11",
+    "gstools>=1.5",
+    "numba>=0.59",
+    "pillow>=10.0",
+    "tifffile>=2023.7",
+]
+
+[project.optional-dependencies]
+# Independent GRDECL readers used only to validate our exports.
+validate = ["resdata", "resfo", "opm", "opm-simulators"]
+gui = ["PySide6-Essentials>=6.6", "matplotlib>=3.8"]
+test = ["pytest"]
+
+[project.gui-scripts]
+cosma = "cosma.gui.main_window:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
