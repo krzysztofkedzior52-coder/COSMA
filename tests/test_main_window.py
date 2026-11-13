@@ -501,3 +501,25 @@ def test_well_map_opens_from_view_menu_and_tree(app):
     assert seen == [pr]
     empty = MainWindow(Project("e"), hooks=dict(report=lambda t, error=True: None, well_map=lambda p: seen.append(p)))
     assert not empty.act_wellmap.isEnabled() and "well" in empty.act_wellmap.toolTip().lower()
+
+
+def test_las_import_takes_several_files(app, tmp_path):
+    from test_imports import LAS
+    pr = Project("l")
+    reports, asked = [], []
+    for n, wn in (("a", "W-1"), ("b", "W-2")):
+        (tmp_path / f"{n}.las").write_text(LAS.format(u="M", w=wn))
+    paths = [str(tmp_path / "a.las"), str(tmp_path / "b.las")]
+
+    def confirm(prev):
+        asked.append(prev.path.name)
+        return prev.initial_values()
+
+    w = MainWindow(pr, hooks=dict(report=lambda t, error=True: reports.append((t, error)), pick_files=lambda k, t: paths,
+                                  confirm=confirm))
+    w.do_import("las")
+    assert set(pr.wells) == {"W-1", "W-2"} and asked == ["a.las"]
+    assert any("2 LAS files imported (1 confirmed one by one, 1 with the same choices)" in t for t, e in reports if not e)
+    w2 = MainWindow(Project("x"), hooks=dict(report=lambda t, error=True: None, pick_files=lambda k, t: [], confirm=confirm))
+    w2.do_import("las")                                                    # cancelled file dialog: nothing happens
+    assert not w2.project.wells

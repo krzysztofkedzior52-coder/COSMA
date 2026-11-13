@@ -16,6 +16,7 @@ such; a documented default is shown as a default so it still gets looked at.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -786,3 +787,94 @@ def import_file(kind: str, path, confirm: Callable, *, project: Project | None =
     if values is None:
         raise ImportCancelled(f"{Path(path).name}: import cancelled")
     return _run(kind, path, finalize(prev, values), project)
+
+
+# -- several LAS files in one go -------------------------------------------------------------------------------------------
+@dataclass
+class BatchResult:
+    kind: str
+    files: list = field(default_factory=list)       # [(file name, ImportResult, "asked" | "same choices as <first file>")]
+
+    @property
+    def applied(self) -> list:
+        return [f"{n}: {', '.join(r.applied) or 'nothing new'}" for n, r, _ in self.files]
+
+    @property
+    def notes(self) -> list:
+        return [x for _, r, _ in self.files for x in r.notes]
+
+
+def las_overview(paths) -> list:
+    """[(label, text)] for the first confirmation of a batch: one line per file, so nothing is a surprise."""
+    import lasio
+    out = []
+    for p in paths:
+        p = Path(p)
+        try:
+            las = lasio.read(str(p))
+            w = str(las.well.WELL.value).strip() if "WELL" in las.well else ""
+            u = (las.curves[0].unit or "").strip() or "(none)"
+            out.append((p.name, f"well {w or '(no name; file name is used)'}, index unit {u}, {len(las.index)} samples, "
+                                f"{len(las.curves) - 1} curves"))
+        except Exception as exc:
+            out.append((p.name, f"CANNOT READ: {exc}"))
+    return out
+
+
+def _same_choices(prev, shared):
+    """Values reusing the choices already made for the batch, or None when this file needs its own confirmation:
+    its unit differs from the file's own declaration, a well link is a guess (note) or ambiguous, or anything is left
+    to choose (conflicts with data already there)."""
+    values = prev.initial_values()
+    if dict(prev.found).get("Index curve / unit in file") != shared.get("_declared"):
+        return None                               # a different index curve or unit label than the one the choice was made for
+    for p in prev.params:
+        if p.key in shared:
+            values[p.key] = shared[p.key]
+    for fw, (link, _) in prev.links.items():
+        if link.name != fw:                       # matched on a similar name only: the user has to look at it
+            return None
+    try:
+        finalize(prev, values)
+    except ImportRejected:
+        return None
+    return values
+
+
+def import_las_batch(paths, confirm: Callable, *, project: Project):
+    """Import several LAS files. The first file (and any later one that differs: another index unit label than the first file, a well
+    link that is only a guess, a clash with data already there) goes through `confirm(preview)` like a single import;
+    the choices made there are reused, visibly, for the files that fit them. All or nothing: if one file is refused,
+    cancelled or fails, the project is left as it was."""
+    paths = [Path(p) for p in paths]
+    if not paths:
+        raise ImportRejected("no LAS file chosen")
+    if len({p.resolve() for p in paths}) != len(paths):
+        raise ImportRejected("the same file is chosen twice")
+    snapshot = copy.deepcopy(project.wells)
+    res, shared, first = BatchResult("las"), None, None
+    try:
+        for k, p in enumerate(paths):
+            prev = inspect("las", p, project)
+            values = _same_choices(prev, shared) if shared is not None else None
+            how = f"same choices as {first}"
+            if values is None:
+                if len(paths) > 1:
+                    prev.found = [(f"File {k + 1} of {len(paths)}", p.name)] + (las_overview(paths) if k == 0 else []) + prev.found
+                    prev.warnings = prev.warnings + ([f"Your choices here are reused for the other {len(paths) - 1} file(s) that "
+                                                      "fit them; a file with a different unit, an uncertain well match or "
+                                                      "a clash with existing data asks again."] if k == 0 else [])
+                values = confirm(prev)
+                if values is None:
+                    raise ImportCancelled(f"{p.name}: import cancelled; nothing was imported")
+                how = "asked"
+                if shared is None:
+                    shared = {q.key: values.get(q.key, q.value) for q in prev.params}
+                    shared["_declared"] = dict(prev.found).get("Index curve / unit in file")
+                    first = p.name
+            res.files.append((p.name, _run("las", p, finalize(prev, values), project), how))
+    except BaseException:
+        project.wells.clear()
+        project.wells.update(snapshot)
+        raise
+    return res

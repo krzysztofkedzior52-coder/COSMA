@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow, QMenu, QMessageBox, QTreeWidget, QTreeWidgetItem)
 
-from ..imports import ImportCancelled, ImportRejected, import_file
+from ..imports import ImportCancelled, ImportRejected, import_file, import_las_batch
 from ..persist import EXTENSION, PersistError, fingerprint, load_project, save_project
 from ..project import Project, ProjectError
 from ..maps import MapError, export_map
@@ -36,6 +36,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         h = hooks or {}
         self.pick_file = h.get("pick_file") or self._pick_file
+        self.pick_files = h.get("pick_files") or self._pick_files
         self.confirm = h.get("confirm") or self._confirm
         self.edit_chart_dialog = h.get("edit_chart") or self._edit_chart
         self.start_chart_dialog = h.get("start_chart") or self._start_chart
@@ -186,6 +187,11 @@ class MainWindow(QMainWindow):
         filt = next((f for k, _, f in IMPORTS if k == kind), "All files (*)")
         path, _ = QFileDialog.getOpenFileName(self, title, "", filt)
         return path or None
+
+    def _pick_files(self, kind, title):
+        filt = next((f for k, _, f in IMPORTS if k == kind), "All files (*)")
+        paths, _ = QFileDialog.getOpenFileNames(self, title + " (select one or more files)", "", filt)
+        return list(paths)
 
     def _confirm(self, preview):
         from .import_dialog import confirm_with_dialog
@@ -416,11 +422,19 @@ class MainWindow(QMainWindow):
     def do_import(self, kind: str):
         pr = self.project
         title = next(t for k, t, _ in IMPORTS if k == kind).rstrip(".")
-        path = self.pick_file(kind, title)
-        if not path:
-            return
+        if kind == "las":
+            paths = self.pick_files(kind, title)
+            if not paths:
+                return
+            path = paths[0] if len(paths) == 1 else f"{len(paths)} LAS files"
+        else:
+            path = self.pick_file(kind, title)
+            paths = None
+            if not path:
+                return
         try:
-            res = import_file(kind, path, self.confirm, project=pr)
+            res = (import_las_batch(paths, self.confirm, project=pr) if paths
+                   else import_file(kind, path, self.confirm, project=pr))
         except ImportCancelled:
             return
         except (ImportRejected, ProjectError, ValueError, OSError) as exc:
@@ -428,6 +442,10 @@ class MainWindow(QMainWindow):
             return
         msg = "; ".join(getattr(res, "applied", []) + getattr(res, "notes", []))
         self.statusBar().showMessage(msg or f"{Path(path).name} imported", 15000)
+        if paths and len(paths) > 1:
+            n_asked = sum(1 for _, _, how in res.files if how == "asked")
+            self.report(f"{len(paths)} LAS files imported ({n_asked} confirmed one by one, "
+                        f"{len(paths) - n_asked} with the same choices):\n" + "\n".join(res.applied), error=False)
         self.refresh()
         if kind == "fault_sticks":
             self.settle_fault_interactions(force=True)

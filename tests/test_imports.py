@@ -513,3 +513,60 @@ def test_project_api_enforces_links_itself(tmp_path):
     with pytest.raises(ProjectError, match="unknown link mode"):
         pr.apply_tops({"A": pick["A"]}, {"A": WellLink("maybe", "W-1")})
     assert pr.wells["W-1"].tops == {}
+
+
+def test_las_batch_reuses_choices_and_asks_again_when_needed(tmp_path):
+    from cosma.imports import import_las_batch
+    pr = _project(tmp_path)
+    a = _w(tmp_path, "a.las", LAS.format(u="M", w="W-1"))
+    b = _w(tmp_path, "b.las", LAS.format(u="M", w="W-77"))
+    c = _w(tmp_path, "c.las", LAS.format(u="FT", w="W-88"))                    # unit not declared in metres -> own question
+    asked = []
+
+    def confirm(prev):
+        asked.append(prev.path.name)
+        v = prev.initial_values()
+        v["depth_unit"] = "ft_intl" if prev.path.name == "c.las" else "m"
+        return v
+
+    res = import_las_batch([a, b, c], confirm, project=pr)
+    assert asked == ["a.las", "c.las"]
+    assert [h for _, _, h in res.files] == ["asked", "same choices as a.las", "asked"]
+    assert {"W-1", "W-77", "W-88"} <= set(pr.wells) and set(pr.wells["W-88"].logs) == {"c"}
+    assert pr.wells["W-88"].logs["c"].md[0] == pytest.approx(1000.0 * 0.3048)
+
+
+def test_las_batch_is_all_or_nothing(tmp_path):
+    from cosma.imports import import_las_batch
+    pr = _project(tmp_path)
+    a = _w(tmp_path, "a.las", LAS.format(u="M", w="W-5"))
+    b = _w(tmp_path, "b.las", LAS.format(u="FT", w="W-6"))
+    before = set(pr.wells)
+    with pytest.raises(ImportCancelled):
+        import_las_batch([a, b], lambda prev: prev.initial_values() if prev.path.name == "a.las" else None, project=pr)
+    assert set(pr.wells) == before                                         # a.las was rolled back
+    with pytest.raises(ImportRejected, match="twice"):
+        import_las_batch([a, a], scripted({}), project=pr)
+    with pytest.raises(ImportRejected, match="no LAS"):
+        import_las_batch([], scripted({}), project=pr)
+    bad = _w(tmp_path, "bad.las", "not a las file")
+    with pytest.raises(Exception):
+        import_las_batch([a, bad], scripted({}), project=pr)
+    assert set(pr.wells) == before
+
+
+def test_las_batch_clash_with_existing_data_asks(tmp_path):
+    from cosma.imports import import_las_batch
+    pr = _project(tmp_path)
+    a = _w(tmp_path, "a.las", LAS.format(u="M", w="W-1"))
+    import_las_batch([a], scripted({}), project=pr)
+    b = _w(tmp_path, "b.las", LAS.format(u="M", w="W-9"))
+    asked = []
+    def confirm(prev):
+        asked.append(prev.path.name)
+        v = prev.initial_values()
+        if prev.path.name == "a.las":
+            v["conflict_actions"] = {"W-1|curve|GR": REPL}
+        return v
+    import_las_batch([b, a], confirm, project=pr)
+    assert asked == ["b.las", "a.las"]                                      # a.las clashes with its own earlier import
