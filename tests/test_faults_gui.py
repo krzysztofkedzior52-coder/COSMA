@@ -30,7 +30,7 @@ class FH(Hooks):
 
     def dict(self):
         d = super().dict()
-        d.update(pick_file=lambda k, t: self.path, confirm=lambda prev: dict(self.values) if self.values is not None else None,
+        d.update(pick_file=lambda k, t: self.path, pick_files=lambda k, t: [self.path], confirm=lambda prev: dict(self.values) if self.values is not None else None,
                  show_fault=self.shown.append, fault_interactions=self.int_calls.append, fault_transmissibility=self.tm_calls.append, confirm_remove=lambda t: (self.removed_ask.append(t), self.remove_ok)[1])
         return d
 
