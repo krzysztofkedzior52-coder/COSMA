@@ -108,7 +108,14 @@ class ImportDialog(QDialog):
         self._horizon_touched = False
         self._pl_key, self._pl = None, None
         for p in preview.params:
-            if p.kind == "choice":
+            if p.kind == "crs":
+                w = QComboBox()
+                w.setEditable(True)
+                w.setInsertPolicy(QComboBox.NoInsert)
+                w.lineEdit().setPlaceholderText("choose from the list, or type an EPSG code (e.g. 32616)")
+                w.setMinimumWidth(420)
+                w.currentTextChanged.connect(self._refresh)
+            elif p.kind == "choice":
                 w = QComboBox()
                 self._fill_choice(w, p, p.value)
                 w.currentIndexChanged.connect(self._refresh)
@@ -126,6 +133,11 @@ class ImportDialog(QDialog):
             self.form.addRow(label, w)
             self.widgets[p.key], self.rows[p.key] = w, label
         lay.addLayout(self.form)
+        self.crs_label = QLabel("")
+        self.crs_label.setWordWrap(True)
+        lay.addWidget(self.crs_label)
+        self._crs_sig = {}
+        self._fill_crs_lists()
 
         self.suggest_label = QLabel("")
         self.suggest_label.setWordWrap(True)
@@ -203,7 +215,7 @@ class ImportDialog(QDialog):
         out = {}
         for p in self.preview.params:
             w = self.widgets[p.key]
-            out[p.key] = w.currentData() if isinstance(w, QComboBox) else w.text()
+            out[p.key] = (w.currentText() if p.kind == "crs" else w.currentData()) if isinstance(w, QComboBox) else w.text()
         if self.preview.file_wells:
             out["well_links"] = {}
             for fw, (combo, name) in self.link_rows.items():
@@ -337,7 +349,52 @@ class ImportDialog(QDialog):
         self.all_combo.blockSignals(False)
 
     # -- refresh ---------------------------------------------------------------------------------------------------------
+    def _fill_crs_lists(self):
+        """The CRS lists: the suggestions for this file first (each with its reason as tooltip), then the built-in catalog.
+        A suggestion is put in the box only when the file or the project states it; otherwise the box stays empty."""
+        from ..crs_catalog import catalog
+        hints = self.preview.crs_hints
+        if hints is None or not any(p.kind == "crs" for p in self.preview.params):
+            return
+        vals = {p.key: self.widgets[p.key].currentText() for p in self.preview.params if p.kind == "crs"}
+        h = hints(vals)
+        lines = []
+        for p in self.preview.params:
+            if p.kind != "crs":
+                continue
+            sugs, note = h.get(p.key, ([], ""))
+            sig = (tuple(x.code for x in sugs), note)
+            if self._crs_sig.get(p.key) == sig:
+                continue
+            self._crs_sig[p.key] = sig
+            w = self.widgets[p.key]
+            keep = w.currentText()
+            w.blockSignals(True)
+            w.clear()
+            w.addItem("")
+            for x in sugs:
+                w.addItem(f"{x.label}   [suggested]")
+                w.setItemData(w.count() - 1, x.reason, Qt.ToolTipRole)
+            w.insertSeparator(w.count())
+            for e in catalog():
+                w.addItem(e.label)
+            w.setCurrentText(keep)
+            if not keep:
+                strong = next((x for x in sugs if x.strong), None)
+                if strong is not None:
+                    w.setCurrentText(strong.label)
+            w.blockSignals(False)
+        for p in self.preview.params:
+            if p.kind == "crs":
+                sugs, note = h.get(p.key, ([], ""))
+                for x in sugs:
+                    lines.append(f"<b>{p.label}</b> suggestion: {x.label} - {x.reason}")
+                if note:
+                    lines.append(f"<i>{note}</i>")
+        self.crs_label.setText("<br>".join(lines))
+
     def _refresh(self, *_):
+        self._fill_crs_lists()
         vals = self.values()
         self._update_placement(vals)
         vals = self.values()

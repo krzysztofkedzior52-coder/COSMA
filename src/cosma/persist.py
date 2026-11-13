@@ -34,7 +34,7 @@ from .variogram import VariogramError, from_dict, to_dict
 from .wells.model import LogSet, RawCore, RawTop, Survey
 
 FORMAT = "cosma-project"
-FORMAT_VERSION = 13         # 13: adds the realization plan; 12: adds the facies simulation setup; 11: adds proportion maps; 10: adds the proportion setup; 9: fault transmissibility may use SGR relations and the user's own SGR methods; 8: adds the data-check setup; 7: adds the facies setup; 6: adds fault transmissibility choices; 5: adds the boundary polygon and boundary options; 4: the grid definition; 3: fault depths and interactions; 2: faults; older files still load
+FORMAT_VERSION = 14         # 14: adds the model CRS; 13: adds the realization plan; 12: adds the facies simulation setup; 11: adds proportion maps; 10: adds the proportion setup; 9: fault transmissibility may use SGR relations and the user's own SGR methods; 8: adds the data-check setup; 7: adds the facies setup; 6: adds fault transmissibility choices; 5: adds the boundary polygon and boundary options; 4: the grid definition; 3: fault depths and interactions; 2: faults; older files still load
 EXTENSION = ".cosma"
 
 
@@ -113,7 +113,7 @@ def _doc(pr: Project, ar: _Arrays) -> dict:
     if pr.boundary is not None:
         bnd = dict(shell=ar.put(np.asarray(pr.boundary.exterior.coords, float)),
                    holes=[ar.put(np.asarray(h.coords, float)) for h in pr.boundary.interiors])
-    return dict(boundary=bnd, faults=faults, fault_depths=dict(pr.fault_depths), fault_reach=pr.fault_reach,
+    return dict(crs=pr.crs, boundary=bnd, faults=faults, fault_depths=dict(pr.fault_depths), fault_reach=pr.fault_reach,
                 fault_transmissibility=_tm_state(pr.fault_transmissibility), sgr_methods=_methods_state(pr.sgr_methods), facies=_facies_state(pr.facies_setup), data_checks=_dc_state(pr.data_checks), proportions=_prop_state(pr.proportions), proportion_maps=pmaps, facies_sim=_fs_state(pr.facies_sim), realization_plan=_rp_state(pr.realization_plan),
                 fault_interactions=_ints(pr.fault_interactions),
                 grid_def=None if pr.grid_def is None else pr.grid_def.to_state(), maps=maps, map_primary=_pairs(pr.map_primary), name=pr.name, type_well=pr.type_well, chart=None if pr.chart is None else pr.chart.to_state(),
@@ -338,6 +338,7 @@ def _build(doc: dict, ar: _Arrays) -> Project:
     for i in pr.fault_interactions:
         if i.a not in pr.faults or i.b not in pr.faults:
             raise PersistError(f"interaction between faults that do not exist: {i.a!r}/{i.b!r}")
+    pr.crs = doc.get("crs")
     if doc.get("boundary") is not None:
         from shapely.geometry import Polygon
         from .grid.boundary import BoundaryError

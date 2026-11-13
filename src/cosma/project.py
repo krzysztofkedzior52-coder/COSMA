@@ -177,6 +177,7 @@ class Project:
         self.fault_interactions: list = []      # fault_interactions.Interaction, answers confirmed by the user
         self.grid_def = None                    # grid_definition.GridDefinition, set by the user
         self.boundary = None                    # shapely Polygon in map coordinates: the model boundary
+        self.crs = None                         # 'EPSG:n' (or WKT) of the model coordinates, once a confirmed import states it
 
     def names(self) -> list:
         return list(self.wells)

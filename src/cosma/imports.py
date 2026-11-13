@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from . import crs_catalog as _crs_cat
 from .io import polygons as _poly
 from .project import Action, ImportResult, Project, WellLink, check_action, suggest_links
 from .surfaces import SurfaceError, _sniff, read_surface
@@ -44,7 +45,7 @@ class ImportRejected(ValueError):
 class Param:
     key: str
     label: str
-    kind: str = "choice"                 # "choice" | "text" | "number"
+    kind: str = "choice"                 # "choice" | "text" | "number" | "crs"
     choices: tuple = ()
     value: Any = None                    # None = must be supplied
     source: str = "required"             # "file" | "default" | "required"
@@ -52,6 +53,7 @@ class Param:
     required_if: tuple | None = None     # (other_key, other_value): only needed/shown then
     help: str = ""
     choice_labels: dict = field(default_factory=dict)   # value -> text shown instead of the value
+    suggestions: list = field(default_factory=list)     # kind "crs": [crs_catalog.Suggestion] shown first in the list
 
     def active(self, values: dict) -> bool:
         return self.required_if is None or values.get(self.required_if[0]) == self.required_if[1]
@@ -74,6 +76,7 @@ class ImportPreview:
     top_names: list = field(default_factory=list)    # distinct pick names in the file (chart present)
     top_choices: dict = field(default_factory=dict)  # horizon uid | "ignore" -> label
     top_suggestions: dict = field(default_factory=dict)   # pick name -> (uid | None, note)
+    crs_hints: Callable | None = None                # (values) -> {param key: ([Suggestion], note)}  (polygon CRS lists)
 
     def initial_values(self) -> dict:
         v = {p.key: p.value for p in self.params}
@@ -170,7 +173,17 @@ def finalize(preview: ImportPreview, values: dict, *, conflicts: bool = True) ->
             if p.required:
                 problems.append(f"{p.label} must be chosen")
             continue
-        if p.kind == "choice" and v not in p.choices:
+        if p.kind == "crs":
+            try:
+                v = _crs_cat.normalise(v)
+            except ValueError as exc:
+                problems.append(f"{p.label}: {exc}")
+                continue
+            if v is None:
+                if p.required:
+                    problems.append(f"{p.label} must be chosen")
+                continue
+        elif p.kind == "choice" and v not in p.choices:
             problems.append(f"{p.label}: {v!r} is not one of {list(p.choices)}")
         elif p.kind == "number":
             try:
@@ -306,18 +319,46 @@ def inspect_polygon(path) -> ImportPreview:
         names = tuple(str(i) for i in range(len(parsed.raws))) + ("largest",)
         params.append(Param("which", "Polygon to use (index or 'largest')", "choice", names, None, "required",
                             help="The file holds several polygons"))
+    xy = np.vstack([r.shell for r in parsed.raws])
     if parsed.carries_crs:
-        params.append(Param("source_crs", "Source CRS", "text", (), None, "file" if parsed.file_crs else "required",
+        params.append(Param("source_crs", "Source CRS", "crs", (), None, "file" if parsed.file_crs else "required",
                             required=parsed.file_crs is None,
                             help="Leave empty to use the CRS in the file" if parsed.file_crs else "File has no CRS: required, e.g. EPSG:4326"))
-        params.append(Param("target_crs", "Model CRS (target)", "text", (), None, "required",
-                            help="e.g. EPSG:32616"))
+        params.append(Param("target_crs", "Model CRS (target)", "crs", (), None, "required",
+                            help="The CRS of the model: wells, surfaces and the grid use it"))
     else:
-        params.append(Param("source_crs", "Source CRS (only to reproject)", "text", (), None, "default", required=False,
+        params.append(Param("source_crs", "Source CRS (only to reproject)", "crs", (), None, "default", required=False,
                             help="Empty = coordinates are already in the model CRS"))
-        params.append(Param("target_crs", "Model CRS (only to reproject)", "text", (), None, "default", required=False))
-    return ImportPreview("polygon", path, found, params,
+        params.append(Param("target_crs", "Model CRS (only to reproject)", "crs", (), None, "default", required=False))
+    prev = ImportPreview("polygon", path, found, params,
                          [f"Ignored geometries: {parsed.ignored}"] if parsed.ignored else [])
+    file_crs_text = _crs_cat.normalise(parsed.file_crs) if parsed.file_crs is not None else None
+
+    def hints(values, prev=prev):
+        """{param key: ([Suggestion], note)} for the CRS lists, from the polygon's coordinates and the project's CRS."""
+        pc = getattr(prev.project, "crs", None)
+        typed = values.get("source_crs")
+        try:
+            src = _crs_cat.normalise(typed) or file_crs_text
+        except ValueError:
+            src = file_crs_text
+        out = {}
+        if parsed.carries_crs:
+            sg, note = _crs_cat.source_suggestions(xy, parsed.file_crs, pc)
+            out["source_crs"] = (sg, note)
+            out["target_crs"] = (_crs_cat.target_suggestions(xy, src, pc) if src else
+                                 ([_crs_cat.Suggestion(pc, _crs_cat.label_of(pc), "the project's CRS (set by an earlier import)")] if pc else []),
+                                 "" if src else "Choose the source CRS first; the target suggestion depends on it.")
+        else:
+            out["source_crs"] = ([], "")
+            out["target_crs"] = ([_crs_cat.Suggestion(pc, _crs_cat.label_of(pc), "the project's CRS")] if pc else [], "")
+        return out
+
+    prev.crs_hints = hints
+    prev.advisor = lambda p: ([f"The project's CRS is {_crs_cat.label_of(prev.project.crs)} but this boundary is brought into "
+                               f"{_crs_cat.label_of(p['target_crs'])}: wells and surfaces already in the project would not match it."]
+                              if p.get("target_crs") and getattr(prev.project, "crs", None) and p["target_crs"] != prev.project.crs else [])
+    return prev
 
 
 def _table_found(path, rows, cm):
@@ -720,6 +761,10 @@ def _run(kind, path, p, project):
         replaced = project.boundary is not None
         project.set_boundary(poly)
         res = ImportResult("polygon")
+        tcrs = _blank(p.get("target_crs"))
+        if tcrs and project.crs is None:
+            project.crs = tcrs
+            res.notes.append(f"the project's CRS is now {_crs_cat.label_of(tcrs)}")
         res.applied.append(f"boundary: {len(poly.exterior.coords) - 1} vertices, {poly.area:,.0f} m2"
                            + (" (replaced the previous boundary)" if replaced else ""))
         return res
