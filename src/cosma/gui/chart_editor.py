@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
-                               QHeaderView, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QRadioButton,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ..chart_edit import Row, apply_chart_edit, rows_from_chart, validate
+from ..chart_edit import (Row, apply_chart_edit, check_hand_chart, parse_interval_text, pick_names, rows_from_chart,
+                          validate, wells_with_tops)
 from ..project import Project, ProjectError
 from ..strat import CONTACTS
 
@@ -176,3 +178,91 @@ class ChartEditorDialog(QDialog):
 def edit_chart_with_dialog(project: Project, parent: QWidget | None = None) -> bool:
     app = QApplication.instance() or QApplication([])      # noqa: F841
     return ChartEditorDialog(project, parent).exec() == QDialog.Accepted
+
+
+class ChartStartDialog(QDialog):
+    """The project has no stratigraphic chart yet. Either build it from the tops of one well, or type the intervals in.
+    Nothing is preselected: how the chart is made is the user's choice."""
+
+    def __init__(self, project: Project, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.project = project
+        self.setWindowTitle("Define the stratigraphic chart")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Surfaces, property maps and variograms attach to the intervals of the stratigraphic chart, so it "
+                             "has to exist first. You can change it afterwards (rename, reorder, add)."))
+        self.from_well = QRadioButton("Build it from the tops of a well")
+        self.by_hand = QRadioButton("Type the intervals in")
+        grp = QButtonGroup(self)
+        for b in (self.from_well, self.by_hand):
+            grp.addButton(b)
+        wells = wells_with_tops(project)
+        lay.addWidget(self.from_well)
+        self.well_combo = QComboBox()
+        for n, k in wells.items():
+            self.well_combo.addItem(f"{n} ({k} tops)", n)
+        self.well_note = QLabel("The picks are ordered by depth: each pick opens an interval, the deepest one is the base. "
+                                "The well becomes the project's reference well for the chart."
+                                if wells else "No well has two or more tops yet. Import tops first (Import > Formation tops...), "
+                                              "or type the intervals in.")
+        self.well_note.setWordWrap(True)
+        lay.addWidget(self.well_combo)
+        lay.addWidget(self.well_note)
+        self.from_well.setEnabled(bool(wells))
+        self.well_combo.setEnabled(False)
+        lay.addWidget(self.by_hand)
+        self.names = QPlainTextEdit()
+        self.names.setPlaceholderText("One interval per line, from the top down.\nA name is the pick at the top of the interval.")
+        self.names.setFixedHeight(100)
+        self.base = QLineEdit()
+        self.base.setPlaceholderText("Name of the base (the pick below the lowest interval)")
+        hint = pick_names(project)
+        self.hint = QLabel(("Pick names already in the wells: " + ", ".join(hint) + ". Use the same names so the picks are recognised.")
+                           if hint else "")
+        self.hint.setWordWrap(True)
+        for w in (self.names, self.base, self.hint):
+            lay.addWidget(w)
+        self.names.setEnabled(False)
+        self.base.setEnabled(False)
+        self.problem = QLabel("")
+        self.problem.setWordWrap(True)
+        self.problem.setStyleSheet("color: #b00020;")
+        lay.addWidget(self.problem)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        for w in (self.from_well, self.by_hand):
+            w.toggled.connect(self._refresh)
+        self.well_combo.currentIndexChanged.connect(self._refresh)
+        self.names.textChanged.connect(self._refresh)
+        self.base.textChanged.connect(self._refresh)
+        self._refresh()
+
+    def how(self):
+        if self.from_well.isChecked() and self.well_combo.currentData():
+            return {"mode": "well", "well": self.well_combo.currentData()}
+        if self.by_hand.isChecked():
+            return {"mode": "hand", "intervals": parse_interval_text(self.names.toPlainText()), "base": self.base.text().strip()}
+        return None
+
+    def _refresh(self, *_):
+        fw, bh = self.from_well.isChecked(), self.by_hand.isChecked()
+        self.well_combo.setEnabled(fw)
+        for w in (self.names, self.base):
+            w.setEnabled(bh)
+        problems = []
+        if not (fw or bh):
+            problems.append("choose how the chart is made")
+        elif bh:
+            problems = check_hand_chart(parse_interval_text(self.names.toPlainText()), self.base.text())
+        self.problem.setText("; ".join(problems))
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(not problems)
+
+
+def start_chart_with_dialog(project: Project, parent: QWidget | None = None):
+    """The answer {"mode": ...} for chart_edit.start_chart, or None if cancelled."""
+    app = QApplication.instance() or QApplication([])      # noqa: F841
+    dlg = ChartStartDialog(project, parent)
+    return dlg.how() if dlg.exec() == QDialog.Accepted else None

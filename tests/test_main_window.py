@@ -1,3 +1,4 @@
+import numpy as np
 import os
 
 import pytest
@@ -71,7 +72,11 @@ def test_menus_follow_project_state(app):
     pr = Project("p")
     w = MainWindow(pr)
     assert w.import_actions["well_headers"].isEnabled() and not w.import_actions["surface"].isEnabled()
-    assert not w.import_actions["variogram"].isEnabled() and not w.act_chart.isEnabled()
+    assert not w.import_actions["variogram"].isEnabled()
+    assert w.act_chart.isEnabled() and w.act_chart.text() == "Define chart..."      # no longer needs a type well
+    for k in ("surface", "property_map", "variogram"):
+        tip = w.import_actions[k].toolTip()
+        assert tip.startswith("Not available yet") and "chart is not defined" in tip and "Define chart" in tip, tip
     pr = synthetic()
     w = MainWindow(pr)
     assert all(a.isEnabled() for a in w.import_actions.values()) and w.act_new_vario.isEnabled()
@@ -413,3 +418,86 @@ def test_open_asks_before_replacing_unsaved_work(app, tmp_path):
     h.unsaved_answer = "discard"
     w.open_project()
     assert w.project is not pr and picked == [1]
+
+
+def test_define_chart_by_hand_unlocks_chart_dependent_imports(app):
+    pr = Project("c")
+    w = MainWindow(pr, hooks=dict(report=lambda t, error=True: None,
+                                  start_chart=lambda p: dict(mode="hand", intervals=["Seal", "Res"], base="Basement")))
+    assert not w.import_actions["surface"].isEnabled()
+    from cosma.chart_edit import start_chart
+    start_chart(pr, w.start_chart_dialog(pr))
+    w.menu_state()
+    assert all(w.import_actions[k].isEnabled() for k in ("surface", "property_map", "variogram"))
+    assert w.act_chart.text() == "Edit chart..."
+
+
+def test_start_chart_validation_and_modes():
+    import pytest
+    from cosma.chart_edit import check_hand_chart, start_chart, wells_with_tops
+    from cosma.project import ProjectError
+    assert check_hand_chart([], "B") and check_hand_chart(["A"], " ") and check_hand_chart(["A", "a"], "B")
+    assert check_hand_chart(["A", "B"], "B")                          # base repeats an interval name
+    assert check_hand_chart(["A", "B"], "Base") == []
+    pr = Project("c")
+    with pytest.raises(ProjectError):
+        start_chart(pr, {"mode": "hand", "intervals": ["A", "A"], "base": "B"})
+    with pytest.raises(ProjectError):
+        start_chart(pr, {"mode": "nonsense"})
+    assert wells_with_tops(pr) == {}
+    start_chart(pr, {"mode": "hand", "intervals": ["A", "B"], "base": "Base"})
+    assert [i.name for i in pr.chart.intervals] == ["A", "B"]
+    with pytest.raises(ProjectError):
+        start_chart(pr, {"mode": "hand", "intervals": ["C"], "base": "D"})
+
+
+def test_start_chart_from_a_well_with_tops(app):
+    from cosma.chart_edit import start_chart, wells_with_tops
+    pr = synthetic(n=2)
+    pr.chart = None
+    assert wells_with_tops(pr)
+    name = next(iter(wells_with_tops(pr)))
+    start_chart(pr, {"mode": "well", "well": name})
+    assert pr.chart is not None and len(pr.chart.intervals) >= 1
+
+
+def test_chart_start_dialog_enables_ok_only_when_valid(app):
+    from PySide6.QtWidgets import QDialogButtonBox
+    from cosma.gui.chart_editor import ChartStartDialog
+    pr = Project("c")
+    d = ChartStartDialog(pr)
+    assert d.how() is None                                           # nothing preselected
+    d.by_hand.setChecked(True)
+    ok = d.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok)
+    assert not ok.isEnabled()                                        # by hand, nothing typed yet
+    d.names.setPlainText("Seal\nRes")
+    d.base.setText("Basement")
+    assert ok.isEnabled() and d.how() == {"mode": "hand", "intervals": ["Seal", "Res"], "base": "Basement"}
+    d.base.setText("seal")
+    assert not ok.isEnabled() and d.problem.text()
+
+
+def test_well_map_data_and_dialog(app):
+    from cosma.gui.well_map_dialog import WellMapDialog
+    from cosma.wellmap import collect
+    pr = synthetic(n=3)
+    data = collect(pr)
+    assert len(data.wells) == len(pr.wells) and all(np.isfinite([w.x, w.y]).all() for w in data.wells)
+    d = WellMapDialog(pr)
+    assert len(d.ax.lines) + len(d.ax.collections) > 0
+    w0 = data.wells[0]
+    assert d.nearest_well(w0.x, w0.y).name == w0.name
+    assert d.nearest_well(w0.x + 1e9, w0.y) is None
+    for b in d.boxes.values():
+        b.setChecked(False)
+
+
+def test_well_map_opens_from_view_menu_and_tree(app):
+    seen = []
+    pr = synthetic(n=2)
+    w = MainWindow(pr, hooks=dict(report=lambda t, error=True: None, well_map=lambda p: seen.append(p)))
+    assert w.act_wellmap.isEnabled()
+    w.act_wellmap.trigger()
+    assert seen == [pr]
+    empty = MainWindow(Project("e"), hooks=dict(report=lambda t, error=True: None, well_map=lambda p: seen.append(p)))
+    assert not empty.act_wellmap.isEnabled() and "well" in empty.act_wellmap.toolTip().lower()

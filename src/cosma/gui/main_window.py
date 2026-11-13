@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow, QMessageBox, QTreeWidget, QTreeWidgetItem)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QMainWindow, QMenu, QMessageBox, QTreeWidget, QTreeWidgetItem)
 
 from ..imports import ImportCancelled, ImportRejected, import_file
 from ..persist import EXTENSION, PersistError, fingerprint, load_project, save_project
@@ -38,11 +38,13 @@ class MainWindow(QMainWindow):
         self.pick_file = h.get("pick_file") or self._pick_file
         self.confirm = h.get("confirm") or self._confirm
         self.edit_chart_dialog = h.get("edit_chart") or self._edit_chart
+        self.start_chart_dialog = h.get("start_chart") or self._start_chart
         self.ask_setup = h.get("ask_setup") or self._ask_setup
         self.run_editor = h.get("run_editor") or self._run_editor
         self.run_map_dialog = h.get("run_map_dialog") or self._run_map_dialog
         self.show_map = h.get("show_map") or self._show_map
         self.show_fault = h.get("show_fault") or self._show_fault
+        self.show_wellmap = h.get("well_map") or self._well_map
         self.run_fault_interactions = h.get("fault_interactions") or self._fault_interactions
         self.run_fault_tm = h.get("fault_transmissibility") or self._fault_tm
         self.run_facies = h.get("facies") or self._facies
@@ -68,7 +70,8 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Project", "Details"])
         self.tree.itemDoubleClicked.connect(lambda *_: self.view_map() if self._selected("map") else
-                                            self.view_fault() if self._selected("fault") else self.edit_variogram())
+                                            self.view_fault() if self._selected("fault") else
+                                            self.well_map() if self._selected("wells") else self.edit_variogram())
         self.tree.currentItemChanged.connect(lambda *_: self.menu_state())
         self.setCentralWidget(self.tree)
         self._menus()
@@ -91,12 +94,14 @@ class MainWindow(QMainWindow):
         self.act_save_as = self._action(f, "Save as...", self.save_as)
         f.addSeparator()
         self._action(f, "Quit", self.close)
+        vw = mb.addMenu("&View")
+        self.act_wellmap = self._action(vw, "Well map...", self.well_map)
         self.import_menu = mb.addMenu("&Import")
         self.import_actions = {}
         for kind, text, _ in IMPORTS:
             self.import_actions[kind] = self._action(self.import_menu, text, lambda k=kind: self.do_import(k))
         s = mb.addMenu("&Stratigraphy")
-        self.act_chart = self._action(s, "Edit chart...", self.edit_chart)
+        self.act_chart = self._action(s, "Define chart...", self.edit_chart)
         v = mb.addMenu("&Variograms")
         self.act_new_vario = self._action(v, "New variogram (compute and edit)...", self.new_variogram)
         self.act_edit_vario = self._action(v, "Edit selected variogram...", self.edit_variogram)
@@ -120,37 +125,61 @@ class MainWindow(QMainWindow):
         self.act_fault_ints = self._action(fm, "Fault ages and interactions...", self.fault_interactions)
         self.act_fault_tm = self._action(fm, "Fault transmissibility...", self.fault_transmissibility)
         self.act_remove_fault = self._action(fm, "Remove selected fault", self.remove_fault)
+        for menu in mb.findChildren(QMenu):
+            menu.setToolTipsVisible(True)
         self.menu_state()
 
     def menu_state(self):
+        """Enable each action only when what it needs exists, and say what is missing in its tooltip."""
         pr = self.project
         has = pr is not None
-        self.act_save.setEnabled(has)
-        self.act_save_as.setEnabled(has)
+
+        def gate(action, *needs):
+            """needs: (condition, what is missing) pairs."""
+            missing = [msg for ok, msg in needs if not ok]
+            action.setEnabled(not missing)
+            tip = "" if not missing else "Not available yet: " + "; ".join(missing) + "."
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
+
+        P = (has, "no project is open (File > New project...)")
         chart = has and pr.chart is not None
+        wells = has and bool(pr.wells)
+        C = (chart, "the stratigraphic chart is not defined (Stratigraphy > Define chart...)")
+        W = (wells, "no wells yet (Import > Well headers...)")
+        faces = has and pr.facies_setup is not None
+        F = (faces, "facies are not set up (Facies > Facies from logs...)")
+        G = (has and pr.grid_def is not None, "the grid is not defined (Grid > Define, build and export grid...)")
+        gate(self.act_save, P)
+        gate(self.act_save_as, P)
         for k, a in self.import_actions.items():
-            a.setEnabled(has and (chart or k not in ("surface", "variogram", "property_map")))
-        self.act_chart.setEnabled(chart)
-        self.act_grid.setEnabled(chart)
-        self.act_new_vario.setEnabled(chart and bool(pr.wells))
+            gate(a, P, *([C] if k in ("surface", "variogram", "property_map") else []))
+        self.act_chart.setText("Edit chart..." if chart else "Define chart...")
+        gate(self.act_chart, P)
+        gate(self.act_grid, P, C)
+        gate(self.act_new_vario, P, C, W)
         sel = self._selected_variogram() is not None
-        self.act_edit_vario.setEnabled(chart and sel)
-        self.act_export_vario.setEnabled(chart and sel)
-        self.act_new_map.setEnabled(chart and bool(pr.wells))
-        msel = self._selected("map") is not None
-        self.act_view_map.setEnabled(chart and msel)
-        self.act_export_map.setEnabled(chart and msel)
-        self.act_view_fault.setEnabled(has and self._selected("fault") is not None)
-        self.act_remove_fault.setEnabled(has and self._selected("fault") is not None)
-        self.act_export_faults.setEnabled(has and bool(pr.faults))
-        self.act_fault_ints.setEnabled(has and len(pr.faults) > 1)
-        self.act_fault_tm.setEnabled(has and bool(pr.faults))
-        self.act_facies.setEnabled(has and bool(pr.wells))
-        self.act_datacheck.setEnabled(has and bool(pr.wells) and pr.facies_setup is not None)
-        self.act_proportions.setEnabled(has and bool(pr.wells) and pr.facies_setup is not None and pr.chart is not None)
-        self.act_fsim.setEnabled(has and bool(pr.wells) and pr.facies_setup is not None and pr.proportions is not None and pr.grid_def is not None)
-        self.act_real.setEnabled(has and pr.facies_sim is not None and pr.chart is not None and pr.facies_setup is not None and pr.grid_def is not None)
-        self.act_pmap.setEnabled(has and pr.facies_setup is not None and pr.chart is not None and pr.grid_def is not None)
+        S_v = (sel, "select a variogram in the project tree")
+        gate(self.act_edit_vario, P, C, S_v)
+        gate(self.act_export_vario, P, C, S_v)
+        gate(self.act_new_map, P, C, W)
+        S_m = (self._selected("map") is not None, "select a map in the project tree")
+        gate(self.act_view_map, P, C, S_m)
+        gate(self.act_export_map, P, C, S_m)
+        S_f = (self._selected("fault") is not None, "select a fault in the project tree")
+        gate(self.act_view_fault, P, S_f)
+        gate(self.act_remove_fault, P, S_f)
+        gate(self.act_export_faults, P, (has and bool(pr.faults), "no faults imported (Import > Fault sticks...)"))
+        gate(self.act_fault_ints, P, (has and len(pr.faults) > 1, "interactions exist only between two or more faults"))
+        gate(self.act_fault_tm, P, (has and bool(pr.faults), "no faults imported (Import > Fault sticks...)"))
+        gate(self.act_wellmap, P, W)
+        gate(self.act_facies, P, W)
+        gate(self.act_datacheck, P, W, F)
+        PR = (has and pr.proportions is not None, "vertical proportion curves are not built (Facies > Vertical proportion curves...)")
+        gate(self.act_proportions, P, W, F, C)
+        gate(self.act_fsim, P, W, F, PR, G)
+        gate(self.act_real, P, (has and pr.facies_sim is not None, "facies simulation is not set (Facies > Simulate facies...)"), C, F, G)
+        gate(self.act_pmap, P, F, C, G)
 
     # -- default dialogs (replaced in tests) ----------------------------------------------------------------------
     def _pick_file(self, kind, title):
@@ -165,6 +194,10 @@ class MainWindow(QMainWindow):
     def _edit_chart(self, project):
         from .chart_editor import edit_chart_with_dialog
         return edit_chart_with_dialog(project, self)
+
+    def _start_chart(self, project):
+        from .chart_editor import start_chart_with_dialog
+        return start_chart_with_dialog(project, self)
 
     def _ask_setup(self, project, preset):
         from .variogram_setup import ask_variogram_setup
@@ -250,6 +283,14 @@ class MainWindow(QMainWindow):
         if self.project is not None and self.project.faults:
             self.run_fault_tm(self.project)
             self.refresh()
+
+    def _well_map(self, project):
+        from .well_map_dialog import WellMapDialog
+        WellMapDialog(project, self).exec()
+
+    def well_map(self):
+        if self.project is not None and self.project.wells:
+            self.show_wellmap(self.project)
 
     def _show_fault(self, fault):
         from .fault_dialog import FaultViewDialog
@@ -435,9 +476,22 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def edit_chart(self):
-        if self.project is None or self.project.chart is None:
+        """Edit the chart; with none yet, first make one (from a well's tops or typed in), then show it in the editor."""
+        pr = self.project
+        if pr is None:
             return
-        self.edit_chart_dialog(self.project)
+        if pr.chart is None:
+            from ..chart_edit import start_chart
+            how = self.start_chart_dialog(pr)
+            if not how:
+                return
+            try:
+                start_chart(pr, how)
+            except ProjectError as exc:
+                self.report(str(exc))
+                return
+            self.refresh()
+        self.edit_chart_dialog(pr)
         self.refresh()
 
     def _selected(self, what):
@@ -585,6 +639,7 @@ class MainWindow(QMainWindow):
                                  f"{len(r.tops)} tops, {sum(len(l.curves) for l in r.logs.values())} curves, "
                                  f"{len(r.core)} core sets" + (f"; missing {', '.join(r.missing())}" if r.missing() else "")])
             wells.addChild(w)
+        wells.setData(0, Qt.UserRole, ("wells",))
         self.tree.addTopLevelItem(wells)
         if pr.faults:
             fa = QTreeWidgetItem(["Faults", str(len(pr.faults))])
@@ -597,6 +652,9 @@ class MainWindow(QMainWindow):
             g = pr.grid_def
             self.tree.addTopLevelItem(QTreeWidgetItem(
                 ["Grid", f"{g.nx} x {g.ny} columns of {g.dx:g} x {g.dy:g} m, azimuth {g.azimuth_deg:g} deg"]))
+        if pr.chart is None:
+            self.tree.addTopLevelItem(QTreeWidgetItem(["Stratigraphy", "not defined - Stratigraphy > Define chart... "
+                                                       "(surfaces, maps and variograms attach to it)"]))
         if pr.chart is not None:
             strat = QTreeWidgetItem(["Stratigraphy", f"{len(pr.chart.intervals)} intervals"])
             for iv in pr.chart.intervals:

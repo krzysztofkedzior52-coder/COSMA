@@ -95,3 +95,52 @@ def apply_chart_edit(project: Project, rows, base_name: str) -> None:
         for n, tops in snap[1].items():
             project.wells[n].tops = tops
         raise
+
+
+# -- starting a chart without a type well ---------------------------------------------------------------------------------
+def wells_with_tops(project: Project) -> dict:
+    """{well: number of picks} for the wells a chart could be built from (at least two picks)."""
+    return {n: len(r.tops) for n, r in project.wells.items() if len(r.tops) >= 2}
+
+
+def pick_names(project: Project) -> list:
+    """Distinct pick names over all wells, in the order first met (a hint when the chart is typed in by hand)."""
+    seen = {}
+    for r in project.wells.values():
+        for t in r.tops.values():
+            seen.setdefault(norm(t.name), t.name)
+    return list(seen.values())
+
+
+def parse_interval_text(text: str) -> list:
+    """One interval name per line (blank lines ignored, spaces trimmed)."""
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def check_hand_chart(names, base_name: str) -> list:
+    """Problems with a chart typed in by hand (empty list = fine)."""
+    if not names:
+        return ["type at least one interval name"]
+    if not base_name.strip():
+        return ["name the base: the pick below the lowest interval"]
+    try:
+        StratChart(list(names), base_name.strip())
+    except StratError as exc:
+        return [str(exc)]
+    return []
+
+
+def start_chart(project: Project, how: dict) -> StratChart:
+    """Create the chart. how = {"mode": "well", "well": name} (built from that well's tops) or
+    {"mode": "hand", "intervals": [...], "base": name}. Refuses if there already is one."""
+    if project.chart is not None:
+        raise ProjectError("the project already has a stratigraphic chart")
+    mode = how.get("mode")
+    if mode == "well":
+        return project.build_chart(how.get("well"))
+    if mode == "hand":
+        problems = check_hand_chart(list(how.get("intervals", [])), how.get("base", ""))
+        if problems:
+            raise ProjectError("; ".join(problems))
+        return project.create_chart(list(how["intervals"]), how["base"].strip())
+    raise ProjectError("say how the chart is made: from a well's tops, or by hand")
