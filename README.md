@@ -73,6 +73,19 @@ Define the areal extent either manually or from a polygon; both give a
   staircase boundary.
 - **Inactive columns are no-flow in a simulator.** A polygon cut does not make an
   open aquifer boundary; that is a stage 9 (boundary condition) job.
+- **Coordinate systems** (`cosma.crs_catalog`): the polygon import dialog has a built-in list of 230 CRS (world
+  UTM zones on WGS 84, NAD83/NAD27/ETRS89/ED50/GDA94/GDA2020 zones, the common geographic datums, and national grids
+  such as British National Grid, Dutch RD, Lambert-93, ETRS-LAEA). Names and areas of use come from the EPSG data
+  bundled with pyproj, so it works offline; any other EPSG code or WKT can still be typed. Suggestions are listed
+  first, each with its reason as a tooltip and in the text below the form, and are **never filled in on a guess**:
+  a CRS is preselected only when the file states it (GeoJSON/KML/`.prj`) or, for the model CRS, when the project
+  already has one. What the suggestions are based on: for lon/lat coordinates the UTM zone covering the polygon's
+  centre on the file's own datum, with WGS 84 as the alternative (and a note when the polygon spans several zones);
+  for a file already projected, keeping its CRS; for a file with no stated CRS, WGS 84 and the regional datum for
+  lon/lat-looking values (the datum itself is not in the numbers, and the note says so). For projected numbers with
+  no stated CRS COSMA says plainly that a zone cannot be read from the numbers and offers nothing but the project's
+  CRS, if it fits. The first confirmed polygon import with a model CRS sets the **project CRS** (saved in the
+  project, format version 14); later imports warn when you choose another one, and never overwrite it.
 
 ## Surfaces and wells (M1)
 
@@ -150,6 +163,14 @@ run. Kinds: `surface`, `polygon`, `well_headers`, `deviation`, `tops`, `core`, `
   grid attached once serves both, and a second one is a conflict (replace / skip / keep as
   alternative with a suffix; the first stays the one the model uses). Horizons are identified
   by id, so renaming or reordering never detaches data.
+- **Starting the chart without a type well** (Stratigraphy > Define chart...): the menu entry is available as soon as
+  a project exists. A dialog asks how the chart is made, with nothing preselected: from the tops of a well that has at
+  least two picks (picks ordered by depth, deepest = base), or typed in by hand (one interval per line, top down, plus
+  the name of the base). Names are checked before OK is enabled (duplicates, empty names). Once a chart exists the
+  entry becomes "Edit chart...". Surfaces, property maps, variograms, the grid and the data checks all attach to the
+  chart; while it is missing, each greyed-out action carries a tooltip and status-bar text saying exactly what it is
+  waiting for (for example "the stratigraphic chart is not defined (Stratigraphy > Define chart...)" or "no wells
+  yet"), and the project tree shows a "Stratigraphy: not defined" row.
 - **Imports after the chart exists**:
   - a **surface** must be attached to a horizon (surfaces cannot be imported before a chart
     exists). The dialog suggests where it sits from the file name (`Top_Seal` = top of Seal,
@@ -454,6 +475,32 @@ defaults, and the report only *suggests* a fallback - it never applies one.
 Limits: the vertical check inherits the variogram tool's angular limit for deviated wells; horizontal points are cell-scale
 and pooled over directions; the KS distance is not a goodness-of-fit test; facies per cell is the majority rule from
 `cosma.facies`.
+
+## Well map (View > Well map..., or double-click "Wells" in the tree)
+
+A plan view of the project: well heads (colour = what the well has: core and logs / core / logs / neither; star = the
+type well), the horizontal path of deviated wells with a square at the bottom, the model boundary, the outline of the
+grid when one is defined (rotation included), fault sticks and fault traces (named, with the depth at which the trace is
+taken), and optionally the depth of any horizon that has a surface behind the wells. Wells without coordinates are
+listed in a note instead of being dropped silently. Click a well for its details (head, KB, TD, picks, curves, core);
+toggles for names, paths, boundary, grid, sticks and traces; zoom/pan toolbar; "Save image..." writes PNG, PDF or SVG.
+The data is collected by `cosma.wellmap.collect` (no Qt), the drawing is `gui/well_map_dialog.py`.
+
+## Importing several LAS files (Import > Well logs (LAS)...)
+
+The file dialog allows selecting several files. The first confirmation shows a one-line overview of every file (well,
+index unit, samples, curves). Your choices there are reused for a later file only when that is provable: its index
+curve/unit label is the same as the first file's, its well name matches a project well exactly (or is a new name), and
+it clashes with no data already there. Any other file gets its own confirmation, so the depth unit and well link are
+never guessed. The batch is **all or nothing**: a cancelled, refused or unreadable file rolls everything back. Each
+file's logs are stored as their own source (the file name). `cosma.imports.import_las_batch` is the headless call.
+
+## Application icon
+
+`cosma.gui.icon` draws the icon in code (layers cut by a fault, plus a well at 32 px and above), so it is sharp at all
+sizes. The app sets it for every window and, on Windows, an explicit app id (`COSMA.GeomodelBuilder`) so the taskbar
+shows it instead of python's icon. `assets/cosma_icon.png` and `assets/cosma.ico` are exported copies for shortcuts
+and installers (`icon.export_icon_files(folder)`). Not seen on a real Windows taskbar yet.
 
 ## Saving and loading projects
 

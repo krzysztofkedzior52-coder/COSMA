@@ -710,7 +710,9 @@ def run(project: Project | None = None, path=None):
     import multiprocessing
     import sys
     multiprocessing.freeze_support()           # needed in a frozen Windows build: realization workers are separate processes
+    from .icon import set_app_identity
     app = QApplication.instance() or QApplication([])
+    set_app_identity(app)
     path = path or (sys.argv[1] if len(sys.argv) > 1 else None)
     w = MainWindow(project)
     if path:
